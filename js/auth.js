@@ -19,48 +19,81 @@ function resetIdleTimer() {
       window.location.href = pathToIndex();
     });
   }, IDLE_TIMEOUT_MS);
-}
+}/* One-shot flag so repeated calls don't stack document listeners. */
+let _idleWatchStarted = false;
 
 function startIdleWatch() {
+  if (_idleWatchStarted) return;
+  _idleWatchStarted = true;
   ["mousedown", "keydown", "touchstart", "scroll"].forEach((evt) => {
     document.addEventListener(evt, resetIdleTimer, { passive: true });
   });
   resetIdleTimer();
 }
 
-function pathToIndex() {
-  // Pages live in /pages/, index.html lives one level up.
-  return window.location.pathname.includes("/pages/") ? "../index.html" : "index.html";
-}
-
-/* Looks up the signed-in user's role from Firestore users/{uid}.
-   Resolves to null if no matching doc (shouldn't normally happen since
-   accounts are provisioned manually alongside their role doc). */
-function fetchUserRole(uid) {
-  return db
-    .collection("users")
-    .doc(uid)
-    .get()
-    .then((doc) => (doc.exists ? doc.data() : null));
-}
-
-/* Call at the top of pos.js / manager.js / reports.js.
-   allowedRoles: array like ["seller","manager"] or ["manager"].
-   Returns a Promise resolving with { uid, role, displayName } once
-   confirmed, or redirects and never resolves (page unloads). */
 function requireAuth(allowedRoles) {
   return new Promise((resolve) => {
-    auth.onAuthStateChanged(async (user) => {
+    const unsub = auth.onAuthStateChanged(async (user) => {
+      // One-shot: detach immediately so reload cycles can't stack listeners.
+      unsub();
+
       if (!user) {
         window.location.href = pathToIndex();
         return;
       }
-      const profile = await fetchUserRole(user.uid);
-      if (!profile || !allowedRoles.includes(profile.role)) {
-        showToast("You don't have access to that page.", "danger");
-        window.location.href = pathToIndex();
+
+      let profile = null;
+      try {
+        profile = await fetchUserRole(user.uid);
+      } catch (err) {
+        // DO NOT redirect on a read error — that turns a transient failure
+        // into an infinite redirect loop with index.js's auto-redirect.
+        console.error("[auth] role lookup failed:", err);
+        showToast("Couldn't verify your account. Check your connection and reload.", "danger");
         return;
       }
+
+      // Normalise: trim whitespace + lowercase, so "Manager" / " manager"
+      // / "manager " all match ["seller","manager"].
+      const role = profile && profile.role
+        ? String(profile.role).trim().toLowerCase()
+        : "";
+
+      if (!profile || !allowedRoles.includes(role)) {
+        console.warn("[auth] access denied. profile =", profile, " role =", JSON.stringify(role), " allowed =", allowedRoles);
+        showToast("You don't have access to that page.", "danger");
+
+        // Sign out FIRST so index.js's onAuthStateChanged sees user === null
+        // and does NOT bounce the user straight back to POS.
+        auth.signOut().then(() => {
+          window.location.href = pathToIndex();
+        });
+        return;
+      }
+
+      currentUserRole = role;
+      currentUserName = profile.displayName || (role === "manager" ? "Main" : "Seller");
+
+      const roleBadge = document.getElementById("roleBadge");
+      const userName = document.getElementById("userName");
+      if (roleBadge) {
+        roleBadge.textContent = role === "manager" ? "Manager" : "Seller";
+        roleBadge.className = role === "manager" ? "badge badge-manager" : "badge badge-seller";
+      }
+      if (userName) userName.textContent = currentUserName;
+
+      document.querySelectorAll(".manager-only").forEach((el) => {
+        el.classList.toggle("hidden", role !== "manager");
+      });
+
+      startIdleWatch();
+      loadAndApplyLogo();
+      wireLogoutButton();
+
+      resolve({ uid: user.uid, role: role, displayName: currentUserName });
+    });
+  });
+}
       currentUserRole = profile.role;
       currentUserName = profile.displayName || (profile.role === "manager" ? "Main" : "Seller");
 
