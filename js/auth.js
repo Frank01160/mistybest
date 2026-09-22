@@ -10,6 +10,7 @@ const IDLE_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes of no interaction -> auto 
 let idleTimer = null;
 let currentUserRole = null;
 let currentUserName = null;
+let _idleWatchStarted = false; // guard: prevents stacking listeners on reload
 
 function resetIdleTimer() {
   if (idleTimer) clearTimeout(idleTimer);
@@ -19,8 +20,7 @@ function resetIdleTimer() {
       window.location.href = pathToIndex();
     });
   }, IDLE_TIMEOUT_MS);
-}/* One-shot flag so repeated calls don't stack document listeners. */
-let _idleWatchStarted = false;
+}
 
 function startIdleWatch() {
   if (_idleWatchStarted) return;
@@ -31,6 +31,24 @@ function startIdleWatch() {
   resetIdleTimer();
 }
 
+function pathToIndex() {
+  // Pages live in /pages/, index.html lives one level up.
+  return window.location.pathname.includes("/pages/") ? "../index.html" : "index.html";
+}
+
+/* Looks up the signed-in user's role from Firestore users/{uid}.
+   Resolves to null if no matching doc. */
+function fetchUserRole(uid) {
+  return db
+    .collection("users")
+    .doc(uid)
+    .get()
+    .then((doc) => (doc.exists ? doc.data() : null));
+}
+
+/* Call at the top of pos.js / manager.js / reports.js.
+   allowedRoles: array like ["seller","manager"] or ["manager"].
+   Resolves with { uid, role, displayName } once confirmed. */
 function requireAuth(allowedRoles) {
   return new Promise((resolve) => {
     const unsub = auth.onAuthStateChanged(async (user) => {
@@ -53,14 +71,18 @@ function requireAuth(allowedRoles) {
         return;
       }
 
-      // Normalise: trim whitespace + lowercase, so "Manager" / " manager"
+      // Normalise role: trim whitespace + lowercase so "Manager" / " manager"
       // / "manager " all match ["seller","manager"].
       const role = profile && profile.role
         ? String(profile.role).trim().toLowerCase()
         : "";
 
       if (!profile || !allowedRoles.includes(role)) {
-        console.warn("[auth] access denied. profile =", profile, " role =", JSON.stringify(role), " allowed =", allowedRoles);
+        console.warn(
+          "[auth] access denied. profile =", profile,
+          " role =", JSON.stringify(role),
+          " allowed =", allowedRoles
+        );
         showToast("You don't have access to that page.", "danger");
 
         // Sign out FIRST so index.js's onAuthStateChanged sees user === null
@@ -74,6 +96,7 @@ function requireAuth(allowedRoles) {
       currentUserRole = role;
       currentUserName = profile.displayName || (role === "manager" ? "Main" : "Seller");
 
+      // Populate the standard header chip if present on this page.
       const roleBadge = document.getElementById("roleBadge");
       const userName = document.getElementById("userName");
       if (roleBadge) {
@@ -82,6 +105,7 @@ function requireAuth(allowedRoles) {
       }
       if (userName) userName.textContent = currentUserName;
 
+      // Show/hide manager-only nav links.
       document.querySelectorAll(".manager-only").forEach((el) => {
         el.classList.toggle("hidden", role !== "manager");
       });
@@ -91,31 +115,6 @@ function requireAuth(allowedRoles) {
       wireLogoutButton();
 
       resolve({ uid: user.uid, role: role, displayName: currentUserName });
-    });
-  });
-}
-      currentUserRole = profile.role;
-      currentUserName = profile.displayName || (profile.role === "manager" ? "Main" : "Seller");
-
-      // Populate the standard header chip if present on this page.
-      const roleBadge = document.getElementById("roleBadge");
-      const userName = document.getElementById("userName");
-      if (roleBadge) {
-        roleBadge.textContent = profile.role === "manager" ? "Manager" : "Seller";
-        roleBadge.className = profile.role === "manager" ? "badge badge-manager" : "badge badge-seller";
-      }
-      if (userName) userName.textContent = currentUserName;
-
-      // Show/hide manager-only nav links.
-      document.querySelectorAll(".manager-only").forEach((el) => {
-        el.classList.toggle("hidden", profile.role !== "manager");
-      });
-
-      startIdleWatch();
-      loadAndApplyLogo();
-      wireLogoutButton();
-
-      resolve({ uid: user.uid, role: profile.role, displayName: currentUserName });
     });
   });
 }
