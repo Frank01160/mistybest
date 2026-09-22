@@ -3,40 +3,37 @@ rules_version = '2';
 // ============================================================================
 // FIRESTORE SECURITY RULES — Misty Code POS
 // ----------------------------------------------------------------------------
-// Paste this into Firebase Console → Firestore Database → Rules, or deploy
-// with the Firebase CLI (`firebase deploy --only firestore:rules`).
+// Paste this into Firebase Console → Firestore Database → Rules, then click
+// Publish (saving a draft is not the same as publishing).
 //
-// These rules are what actually enforce "seller can't edit products" —
-// the UI hiding buttons is only a convenience, not security. A seller
-// account with dev tools open could otherwise write directly to Firestore.
-//
-// Review and test these (Firestore Rules Playground in the console) before
-// relying on them for a real business — treat this as a solid starting
-// point, not a guarantee.
+// Fixed from the previous version: helper functions must live INSIDE the
+// service/match block so $(database) is in scope. Defining them outside
+// caused every read/write to be denied, which is why you were seeing
+// permission-denied errors everywhere even while correctly signed in.
 // ============================================================================
-
-function isSignedIn() {
-  return request.auth != null;
-}
-
-function myRole() {
-  return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
-}
-
-function isManager() {
-  return isSignedIn() && myRole() == 'manager';
-}
-
-function isSeller() {
-  return isSignedIn() && myRole() == 'seller';
-}
-
-function isStaff() {
-  return isManager() || isSeller();
-}
 
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isManager() {
+      return isSignedIn() && myRole() == 'manager';
+    }
+
+    function isSeller() {
+      return isSignedIn() && myRole() == 'seller';
+    }
+
+    function isStaff() {
+      return isManager() || isSeller();
+    }
 
     // ----- users: each account can read only its own role/profile doc.
     // No client writes — provision these manually in the console.
