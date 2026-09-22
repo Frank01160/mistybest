@@ -34,8 +34,9 @@ function pathToIndex() {
 }
 
 /* Looks up the signed-in user's role from Firestore users/{uid}.
-   Resolves to null if no matching doc (shouldn't normally happen since
-   accounts are provisioned manually alongside their role doc). */
+   Resolves to null if no matching doc, or throws if Firestore rejects the
+   read outright (e.g. a security rules problem) — both are handled by
+   the caller below. */
 function fetchUserRole(uid) {
   return db
     .collection("users")
@@ -47,7 +48,11 @@ function fetchUserRole(uid) {
 /* Call at the top of pos.js / manager.js / reports.js.
    allowedRoles: array like ["seller","manager"] or ["manager"].
    Returns a Promise resolving with { uid, role, displayName } once
-   confirmed, or redirects and never resolves (page unloads). */
+   confirmed. On any failure it signs the user out before redirecting —
+   this is the part that matters: if we redirect to index.html while
+   still signed in, index.js immediately bounces back here and you get
+   an infinite login<->pos loop. Signing out first breaks that cycle and
+   lands you on a clean login screen with a message explaining why. */
 function requireAuth(allowedRoles) {
   return new Promise((resolve) => {
     auth.onAuthStateChanged(async (user) => {
@@ -55,12 +60,40 @@ function requireAuth(allowedRoles) {
         window.location.href = pathToIndex();
         return;
       }
-      const profile = await fetchUserRole(user.uid);
-      if (!profile || !allowedRoles.includes(profile.role)) {
-        showToast("You don't have access to that page.", "danger");
+
+      let profile = null;
+      try {
+        profile = await fetchUserRole(user.uid);
+      } catch (err) {
+        console.error("Role lookup failed:", err);
+        await auth.signOut();
+        sessionStorage.setItem(
+          "mc_login_error",
+          "Couldn't check your account permissions (Firestore rules or connection issue). Please try signing in again."
+        );
         window.location.href = pathToIndex();
         return;
       }
+
+      if (!profile) {
+        console.error(`No users/${user.uid} document found in Firestore.`);
+        await auth.signOut();
+        sessionStorage.setItem(
+          "mc_login_error",
+          "Your account isn't set up yet — no role found in Firestore. Ask the manager to check the users collection."
+        );
+        window.location.href = pathToIndex();
+        return;
+      }
+
+      if (!allowedRoles.includes(profile.role)) {
+        console.error(`User role "${profile.role}" not permitted on this page (needs one of: ${allowedRoles.join(", ")}).`);
+        await auth.signOut();
+        sessionStorage.setItem("mc_login_error", "You don't have access to that page.");
+        window.location.href = pathToIndex();
+        return;
+      }
+
       currentUserRole = profile.role;
       currentUserName = profile.displayName || (profile.role === "manager" ? "Main" : "Seller");
 
