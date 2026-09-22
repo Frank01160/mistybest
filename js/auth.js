@@ -1,4 +1,4 @@
-/* ==========================================================================
+ /* ==========================================================================
    AUTH.JS
    --------------------------------------------------------------------------
    Handles: role lookup after sign-in, page guarding (redirect to login if
@@ -10,7 +10,6 @@ const IDLE_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes of no interaction -> auto 
 let idleTimer = null;
 let currentUserRole = null;
 let currentUserName = null;
-let _idleWatchStarted = false; // guard: prevents stacking listeners on reload
 
 function resetIdleTimer() {
   if (idleTimer) clearTimeout(idleTimer);
@@ -23,8 +22,6 @@ function resetIdleTimer() {
 }
 
 function startIdleWatch() {
-  if (_idleWatchStarted) return;
-  _idleWatchStarted = true;
   ["mousedown", "keydown", "touchstart", "scroll"].forEach((evt) => {
     document.addEventListener(evt, resetIdleTimer, { passive: true });
   });
@@ -37,7 +34,8 @@ function pathToIndex() {
 }
 
 /* Looks up the signed-in user's role from Firestore users/{uid}.
-   Resolves to null if no matching doc. */
+   Resolves to null if no matching doc (shouldn't normally happen since
+   accounts are provisioned manually alongside their role doc). */
 function fetchUserRole(uid) {
   return db
     .collection("users")
@@ -48,73 +46,43 @@ function fetchUserRole(uid) {
 
 /* Call at the top of pos.js / manager.js / reports.js.
    allowedRoles: array like ["seller","manager"] or ["manager"].
-   Resolves with { uid, role, displayName } once confirmed. */
+   Returns a Promise resolving with { uid, role, displayName } once
+   confirmed, or redirects and never resolves (page unloads). */
 function requireAuth(allowedRoles) {
   return new Promise((resolve) => {
-    const unsub = auth.onAuthStateChanged(async (user) => {
-      // One-shot: detach immediately so reload cycles can't stack listeners.
-      unsub();
-
+    auth.onAuthStateChanged(async (user) => {
       if (!user) {
         window.location.href = pathToIndex();
         return;
       }
-
-      let profile = null;
-      try {
-        profile = await fetchUserRole(user.uid);
-      } catch (err) {
-        // DO NOT redirect on a read error — that turns a transient failure
-        // into an infinite redirect loop with index.js's auto-redirect.
-        console.error("[auth] role lookup failed:", err);
-        showToast("Couldn't verify your account. Check your connection and reload.", "danger");
-        return;
-      }
-
-      // Normalise role: trim whitespace + lowercase so "Manager" / " manager"
-      // / "manager " all match ["seller","manager"].
-      const role = profile && profile.role
-        ? String(profile.role).trim().toLowerCase()
-        : "";
-
-      if (!profile || !allowedRoles.includes(role)) {
-        console.warn(
-          "[auth] access denied. profile =", profile,
-          " role =", JSON.stringify(role),
-          " allowed =", allowedRoles
-        );
+      const profile = await fetchUserRole(user.uid);
+      if (!profile || !allowedRoles.includes(profile.role)) {
         showToast("You don't have access to that page.", "danger");
-
-        // Sign out FIRST so index.js's onAuthStateChanged sees user === null
-        // and does NOT bounce the user straight back to POS.
-        auth.signOut().then(() => {
-          window.location.href = pathToIndex();
-        });
+        window.location.href = pathToIndex();
         return;
       }
-
-      currentUserRole = role;
-      currentUserName = profile.displayName || (role === "manager" ? "Main" : "Seller");
+      currentUserRole = profile.role;
+      currentUserName = profile.displayName || (profile.role === "manager" ? "Main" : "Seller");
 
       // Populate the standard header chip if present on this page.
       const roleBadge = document.getElementById("roleBadge");
       const userName = document.getElementById("userName");
       if (roleBadge) {
-        roleBadge.textContent = role === "manager" ? "Manager" : "Seller";
-        roleBadge.className = role === "manager" ? "badge badge-manager" : "badge badge-seller";
+        roleBadge.textContent = profile.role === "manager" ? "Manager" : "Seller";
+        roleBadge.className = profile.role === "manager" ? "badge badge-manager" : "badge badge-seller";
       }
       if (userName) userName.textContent = currentUserName;
 
       // Show/hide manager-only nav links.
       document.querySelectorAll(".manager-only").forEach((el) => {
-        el.classList.toggle("hidden", role !== "manager");
+        el.classList.toggle("hidden", profile.role !== "manager");
       });
 
       startIdleWatch();
       loadAndApplyLogo();
       wireLogoutButton();
 
-      resolve({ uid: user.uid, role: role, displayName: currentUserName });
+      resolve({ uid: user.uid, role: profile.role, displayName: currentUserName });
     });
   });
 }
