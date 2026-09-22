@@ -22,6 +22,14 @@ auth.onAuthStateChanged((user) => {
   }
 });
 
+/* Surface why a previous attempt bounced back here, if requireAuth()
+   signed the user out and left a message (see auth.js). */
+const loginErrorFromRedirect = sessionStorage.getItem("mc_login_error");
+if (loginErrorFromRedirect) {
+  sessionStorage.removeItem("mc_login_error");
+  showToast(loginErrorFromRedirect, "danger");
+}
+
 loadAndApplyLogo();
 
 /* ----- Step 1: role selection ------------------------------------------------- */
