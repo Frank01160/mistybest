@@ -14,11 +14,29 @@ const emailInputEl = document.getElementById("emailInput");
 const passwordInputEl = document.getElementById("passwordInput");
 const loginErrorEl = document.getElementById("loginError");
 const loginSubmitBtn = document.getElementById("loginSubmitBtn");
-
-/* If already signed in, skip straight to the app. */
-auth.onAuthStateChanged((user) => {
-  if (user) {
+/* If already signed in AND their role is valid, skip straight to the app.
+   Otherwise stay on the login page (or sign out if the role is unusable).
+   Critically: NEVER redirect purely on `user` being non-null — that is what
+   fights with requireAuth() and creates the redirect loop. */
+auth.onAuthStateChanged(async (user) => {
+  if (!user) return;
+  try {
+    const snap = await db.collection("users").doc(user.uid).get();
+    if (!snap.exists) {
+      console.warn("[index] signed in but no users/{uid} doc — signing out");
+      await auth.signOut();
+      return;
+    }
+    const role = String(snap.data().role || "").trim().toLowerCase();
+    if (role !== "seller" && role !== "manager") {
+      console.warn("[index] signed in but role is invalid:", snap.data().role);
+      await auth.signOut();
+      return;
+    }
     window.location.href = "pages/pos.html";
+  } catch (e) {
+    // Read failed (rules/offline). Do NOT redirect — stay on login page.
+    console.error("[index] role precheck failed:", e);
   }
 });
 
